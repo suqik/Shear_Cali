@@ -67,6 +67,7 @@ def test_sampler_config_file_allows_cli_override():
         n_steps=None,
         burn_in=None,
         thin=None,
+        n_processes=None,
         initial_scale=None,
         prior_radius=None,
         light_mode=None,
@@ -84,6 +85,7 @@ def test_sampler_config_file_allows_cli_override():
     assert merged.data == ROOT / "training_arrays.npy"
     assert merged.index == 3
     assert merged.n_walkers == 40
+    assert merged.n_processes == 1
     assert merged.progress is False
 
 

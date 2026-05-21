@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ if str(ROOT) not in sys.path:
 from shape_flow.utils import ConfigOption, merge_config, validate_sampling_config
 
 
+LOGGER = logging.getLogger("shape_flow.sample_shape_posterior")
 OBSERVED_FIELD_NAMES = ("e1", "e2")
 COND_FIELD_NAMES = ("hlf", "mag", "snr")
 
@@ -36,8 +38,16 @@ CONFIG_OPTIONS = (
     ConfigOption("progress", "mcmc", "progress", "bool", False),
     ConfigOption("verbose", "mcmc", "verbose", "bool", False),
     ConfigOption("light_mode", "mcmc", "light_mode", "bool", False),
+    ConfigOption("n_processes", "mcmc", "n_processes", "int", 1),
     ConfigOption("device", "runtime", "device", "str", "cpu"),
 )
+
+
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,6 +69,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-steps", type=int)
     parser.add_argument("--burn-in", type=int)
     parser.add_argument("--thin", type=int)
+    parser.add_argument("--n-processes", type=int)
     parser.add_argument("--initial-scale", type=float)
     parser.add_argument("--prior-radius", type=float)
     parser.add_argument(
@@ -159,10 +170,19 @@ def _row_from_fields(get_column, names: tuple[str, ...], index: int) -> np.ndarr
 
 def main() -> None:
     args = parse_args()
+    configure_logging()
+    LOGGER.info("stage=configuration_loaded")
 
     from shape_flow import MCMCConfig, load_likelihood, sample_posterior_zeus
 
+    LOGGER.info("stage=observation_loading")
     e_meas, cond = load_observation(args)
+    LOGGER.info(
+        "stage=observation_loaded e_meas_features=%d cond_features=%d",
+        len(e_meas),
+        len(cond),
+    )
+    LOGGER.info("stage=likelihood_loading checkpoint=%s", args.checkpoint)
     likelihood = load_likelihood(args.checkpoint, map_location=args.device)
     config = MCMCConfig(
         n_walkers=args.n_walkers,
@@ -175,6 +195,16 @@ def main() -> None:
         progress=args.progress,
         verbose=args.verbose,
         light_mode=args.light_mode,
+        n_processes=args.n_processes,
+    )
+    LOGGER.info(
+        "stage=sampling_start n_walkers=%d n_steps=%d burn_in=%d thin=%d "
+        "n_processes=%d",
+        config.n_walkers,
+        config.n_steps,
+        config.burn_in,
+        config.thin,
+        config.n_processes,
     )
     result = sample_posterior_zeus(
         likelihood,
@@ -182,7 +212,9 @@ def main() -> None:
         cond,
         config=config,
     )
+    LOGGER.info("stage=sampling_finished samples=%s", result.samples.shape)
 
+    LOGGER.info("stage=posterior_saving path=%s", args.output)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
         args.output,
@@ -196,10 +228,13 @@ def main() -> None:
         ncall=result.ncall if result.ncall is not None else -1,
         efficiency=result.efficiency if result.efficiency is not None else np.nan,
     )
-    print(f"saved={args.output}")
-    print(f"samples={result.samples.shape}")
-    print(f"ncall={result.ncall}")
-    print(f"efficiency={result.efficiency}")
+    LOGGER.info("stage=done saved=%s", args.output)
+    LOGGER.info(
+        "stage=summary samples=%s ncall=%s efficiency=%s",
+        result.samples.shape,
+        result.ncall,
+        result.efficiency,
+    )
 
 
 if __name__ == "__main__":

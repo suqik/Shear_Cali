@@ -17,6 +17,11 @@ from .model import ConditionalShapeFlow, FlowConfig
 from .scaling import Standardizer
 
 ProgressCallback = Callable[[int, dict[str, float]], None]
+TrainingCheckpointCallback = Callable[
+    [int, ConditionalShapeFlow, dict[str, list[float]], int, float],
+    None,
+]
+CHECKPOINT_INTERVAL_EPOCHS = 10
 
 
 def default_device() -> torch.device:
@@ -212,6 +217,7 @@ def train_model(
     config: TrainingConfig,
     device: torch.device | str | None = None,
     progress_callback: ProgressCallback | None = None,
+    checkpoint_callback: TrainingCheckpointCallback | None = None,
 ) -> ModelTrainingResult:
     """Fit the flow model and restore the best validation state."""
 
@@ -253,6 +259,9 @@ def train_model(
         if progress_callback is not None:
             progress_callback(epoch, {"train_nll": train_nll, "val_nll": val_nll})
 
+        if checkpoint_callback is not None:
+            checkpoint_callback(epoch, model, history, best_epoch, best_val_nll)
+
         if epochs_without_improvement >= config.stop_after_epoch:
             break
 
@@ -277,6 +286,8 @@ def save_flow_checkpoint(
     best_epoch: int,
     best_val_nll: float,
     config: TrainingConfig,
+    epoch: int | None = None,
+    checkpoint_kind: str = "final",
 ) -> None:
     """Save flow parameters, scalers, and training metadata."""
 
@@ -291,10 +302,46 @@ def save_flow_checkpoint(
             "history": history,
             "best_epoch": best_epoch,
             "best_val_nll": best_val_nll,
+            "checkpoint_epoch": epoch,
+            "checkpoint_kind": checkpoint_kind,
             "training_config": _training_config_to_dict(config),
         },
     }
     torch.save(checkpoint, path)
+
+
+def save_periodic_flow_checkpoint(
+    model: ConditionalShapeFlow,
+    target_scaler: Standardizer,
+    context_scaler: Standardizer,
+    path: str | Path,
+    *,
+    epoch: int,
+    history: dict[str, list[float]],
+    best_epoch: int,
+    best_val_nll: float,
+    config: TrainingConfig,
+    interval: int = CHECKPOINT_INTERVAL_EPOCHS,
+) -> bool:
+    """Save the current flow checkpoint every ``interval`` epochs."""
+
+    if interval < 1:
+        raise ValueError("checkpoint interval must be positive")
+    if epoch % interval != 0:
+        return False
+    save_flow_checkpoint(
+        model,
+        target_scaler,
+        context_scaler,
+        path,
+        history=history,
+        best_epoch=best_epoch,
+        best_val_nll=best_val_nll,
+        config=config,
+        epoch=epoch,
+        checkpoint_kind="periodic_current",
+    )
+    return True
 
 
 def train_shape_flow(
@@ -339,6 +386,28 @@ def train_shape_flow(
                 f"{model.config.context_features} != "
                 f"{prepared.train_arrays.context_features}"
             )
+    checkpoint_callback = None
+    if config.checkpoint_path is not None:
+
+        def checkpoint_callback(
+            epoch: int,
+            model: ConditionalShapeFlow,
+            history: dict[str, list[float]],
+            best_epoch: int,
+            best_val_nll: float,
+        ) -> None:
+            save_periodic_flow_checkpoint(
+                model,
+                prepared.target_scaler,
+                prepared.context_scaler,
+                config.checkpoint_path,
+                epoch=epoch,
+                history=history,
+                best_epoch=best_epoch,
+                best_val_nll=best_val_nll,
+                config=config,
+            )
+
     trained = train_model(
         model,
         prepared.train_loader,
@@ -346,6 +415,7 @@ def train_shape_flow(
         config=config,
         device=device,
         progress_callback=progress_callback,
+        checkpoint_callback=checkpoint_callback,
     )
     result = TrainingResult(
         model=trained.model,
@@ -368,6 +438,8 @@ def train_shape_flow(
             best_epoch=trained.best_epoch,
             best_val_nll=trained.best_val_nll,
             config=config,
+            epoch=len(trained.history["train_nll"]),
+            checkpoint_kind="final_best",
         )
 
     return result

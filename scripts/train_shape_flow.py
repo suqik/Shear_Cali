@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -16,6 +17,7 @@ if str(ROOT) not in sys.path:
 from shape_flow.utils import ConfigOption, merge_config, validate_training_config
 
 
+LOGGER = logging.getLogger("shape_flow.train_shape_flow")
 SHAPE_FIELD_NAMES = ("e1_t", "e2_t", "e1", "e2")
 COND_FIELD_NAMES = ("hlf", "mag", "snr")
 
@@ -46,6 +48,13 @@ CONFIG_OPTIONS = (
     ConfigOption("hidden_features", "model", "hidden_features", "int_list", [128, 128]),
     ConfigOption("bins", "model", "bins", "int", 8),
 )
+
+
+def configure_logging() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -174,16 +183,18 @@ def _column_stack(get_column, names: tuple[str, ...]) -> np.ndarray:
 
 
 def progress(epoch: int, metrics: dict[str, float]) -> None:
-    print(
-        f"epoch={epoch:04d} "
-        f"train_nll={metrics['train_nll']:.6f} "
-        f"val_nll={metrics['val_nll']:.6f}",
-        flush=True,
+    LOGGER.info(
+        "stage=training epoch=%04d train_nll=%.6f val_nll=%.6f",
+        epoch,
+        metrics["train_nll"],
+        metrics["val_nll"],
     )
 
 
 def main() -> None:
     args = parse_args()
+    configure_logging()
+    LOGGER.info("stage=configuration_loaded")
 
     from shape_flow import (
         TrainingConfig,
@@ -192,11 +203,19 @@ def main() -> None:
         prepare_training_data,
         resolve_device,
         save_flow_checkpoint,
+        save_periodic_flow_checkpoint,
         train_model,
     )
 
     # 1. Data loading.
+    LOGGER.info("stage=data_loading")
     e_true, e_meas, cond = load_arrays(args)
+    LOGGER.info(
+        "stage=data_loaded samples=%d e_true_features=%d cond_features=%d",
+        len(e_true),
+        e_true.shape[1],
+        cond.shape[1],
+    )
 
     config = TrainingConfig(
         val_fraction=args.val_fraction,
@@ -217,10 +236,13 @@ def main() -> None:
 
     # 2. Data preparation and scaler fitting/loading.
     device = resolve_device(config)
+    LOGGER.info("stage=device_resolved device=%s", device)
     resumed = None
     if args.resume_checkpoint is not None:
+        LOGGER.info("stage=checkpoint_loading path=%s", args.resume_checkpoint)
         resumed = load_flow_checkpoint(args.resume_checkpoint, device=device)
 
+    LOGGER.info("stage=data_preparation")
     prepared = prepare_training_data(
         e_true,
         e_meas,
@@ -233,12 +255,17 @@ def main() -> None:
 
     # 3. Neural density estimator construction/loading.
     if resumed is None:
+        LOGGER.info(
+            "stage=flow_building context_features=%d",
+            prepared.train_arrays.context_features,
+        )
         model = build_shape_flow(
             prepared.train_arrays.context_features,
             config=config,
             device=device,
         )
     else:
+        LOGGER.info("stage=flow_loading")
         model = resumed.model
         if model.config.context_features != prepared.train_arrays.context_features:
             raise ValueError(
@@ -248,6 +275,37 @@ def main() -> None:
             )
 
     # 4. Training.
+    LOGGER.info(
+        "stage=training_start maximum_training_epoch=%d stop_after_epoch=%d",
+        config.maximum_training_epoch,
+        config.stop_after_epoch,
+    )
+
+    def checkpoint_callback(
+        epoch: int,
+        model,
+        history: dict[str, list[float]],
+        best_epoch: int,
+        best_val_nll: float,
+    ) -> None:
+        saved = save_periodic_flow_checkpoint(
+            model,
+            prepared.target_scaler,
+            prepared.context_scaler,
+            args.output,
+            epoch=epoch,
+            history=history,
+            best_epoch=best_epoch,
+            best_val_nll=best_val_nll,
+            config=config,
+        )
+        if saved:
+            LOGGER.info(
+                "stage=checkpoint_saved epoch=%d kind=periodic_current path=%s",
+                epoch,
+                args.output,
+            )
+
     trained = train_model(
         model,
         prepared.train_loader,
@@ -255,9 +313,12 @@ def main() -> None:
         config=config,
         device=device,
         progress_callback=progress,
+        checkpoint_callback=checkpoint_callback,
     )
+    LOGGER.info("stage=training_finished epochs=%d", len(trained.history["train_nll"]))
 
     # 5. Flow checkpoint saving.
+    LOGGER.info("stage=checkpoint_saving path=%s", args.output)
     save_flow_checkpoint(
         trained.model,
         prepared.target_scaler,
@@ -267,13 +328,16 @@ def main() -> None:
         best_epoch=trained.best_epoch,
         best_val_nll=trained.best_val_nll,
         config=config,
+        epoch=len(trained.history["train_nll"]),
+        checkpoint_kind="final_best",
     )
 
-    print(f"saved={args.output}")
-    print(f"trained_epochs={len(trained.history['train_nll'])}")
-    print(
-        f"best_epoch={trained.best_epoch} "
-        f"best_val_nll={trained.best_val_nll:.6f}"
+    LOGGER.info("stage=done saved=%s", args.output)
+    LOGGER.info(
+        "stage=summary trained_epochs=%d best_epoch=%d best_val_nll=%.6f",
+        len(trained.history["train_nll"]),
+        trained.best_epoch,
+        trained.best_val_nll,
     )
 
 

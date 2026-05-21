@@ -80,6 +80,8 @@ def validate_sampling_config(args: Namespace) -> None:
         raise ValueError("Use either data/index or explicit e_meas/cond, not both")
     if args.data is None and args.e_meas is None:
         raise ValueError("Provide data in [paths] or e_meas/cond in [observation]")
+    if getattr(args, "n_processes", 1) < 1:
+        raise ValueError("n_processes must be positive")
 
 
 def _option_value(

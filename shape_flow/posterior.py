@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import multiprocessing as mp
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -10,6 +11,11 @@ import numpy as np
 from .likelihood import ShapeFlowLikelihood
 
 PriorLogProb = Callable[[np.ndarray, np.ndarray], np.ndarray | float]
+_PARALLEL_LIKELIHOOD: ShapeFlowLikelihood | None = None
+_PARALLEL_E_MEAS: np.ndarray | None = None
+_PARALLEL_COND: np.ndarray | None = None
+_PARALLEL_PRIOR_LOG_PROB: PriorLogProb | None = None
+_PARALLEL_PRIOR_RADIUS = 0.999
 
 
 @dataclass
@@ -26,6 +32,7 @@ class MCMCConfig:
     progress: bool = False
     verbose: bool = False
     light_mode: bool = False
+    n_processes: int = 1
 
     def __post_init__(self) -> None:
         if self.n_walkers < 4:
@@ -42,6 +49,8 @@ class MCMCConfig:
             raise ValueError("initial_scale must be positive")
         if self.prior_radius <= 0.0:
             raise ValueError("prior_radius must be positive")
+        if self.n_processes < 1:
+            raise ValueError("n_processes must be positive")
 
 
 @dataclass
@@ -88,43 +97,76 @@ def make_log_posterior(
     vectorized walker array with shape ``(n_walkers, 2)``.
     """
 
-    e_meas_vector = _as_vector(e_meas, "e_meas", n_features=2)
-    cond_vector = _as_vector(cond, "cond")
+    return _make_log_posterior_from_vectors(
+        likelihood,
+        _as_vector(e_meas, "e_meas", n_features=2),
+        _as_vector(cond, "cond"),
+        prior_log_prob=prior_log_prob,
+        prior_radius=prior_radius,
+    )
 
-    if prior_log_prob is None:
 
-        def prior_log_prob(e_true_batch: np.ndarray, cond_batch: np.ndarray) -> np.ndarray:
-            return uniform_ellipticity_prior(
-                e_true_batch,
-                cond_batch,
-                max_radius=prior_radius,
-            )
-
+def _make_log_posterior_from_vectors(
+    likelihood: ShapeFlowLikelihood,
+    e_meas_vector: np.ndarray,
+    cond_vector: np.ndarray,
+    *,
+    prior_log_prob: PriorLogProb | None,
+    prior_radius: float,
+) -> Callable[[np.ndarray], np.ndarray | float]:
     def log_posterior(e_true: np.ndarray) -> np.ndarray | float:
-        e_true_batch, squeeze = _as_e_true_batch(e_true)
-        n_batch = e_true_batch.shape[0]
-        e_meas_batch = np.repeat(e_meas_vector[None, :], n_batch, axis=0)
-        cond_batch = np.repeat(cond_vector[None, :], n_batch, axis=0)
-
-        prior_values = _as_log_prob_array(
-            prior_log_prob(e_true_batch, cond_batch),
-            n_batch,
-            name="prior_log_prob",
+        return _evaluate_log_posterior(
+            likelihood,
+            e_meas_vector,
+            cond_vector,
+            e_true,
+            prior_log_prob=prior_log_prob,
+            prior_radius=prior_radius,
         )
-        posterior = np.full(n_batch, -np.inf, dtype=np.float64)
-        valid = np.isfinite(prior_values)
-
-        if np.any(valid):
-            likelihood_values = likelihood.log_prob(
-                e_meas_batch[valid],
-                e_true_batch[valid],
-                cond_batch[valid],
-            )
-            posterior[valid] = prior_values[valid] + _to_numpy(likelihood_values)
-
-        return float(posterior[0]) if squeeze else posterior
 
     return log_posterior
+
+
+def _evaluate_log_posterior(
+    likelihood: ShapeFlowLikelihood,
+    e_meas_vector: np.ndarray,
+    cond_vector: np.ndarray,
+    e_true: np.ndarray,
+    *,
+    prior_log_prob: PriorLogProb | None,
+    prior_radius: float,
+) -> np.ndarray | float:
+    e_true_batch, squeeze = _as_e_true_batch(e_true)
+    n_batch = e_true_batch.shape[0]
+    e_meas_batch = np.repeat(e_meas_vector[None, :], n_batch, axis=0)
+    cond_batch = np.repeat(cond_vector[None, :], n_batch, axis=0)
+
+    if prior_log_prob is None:
+        prior_values = uniform_ellipticity_prior(
+            e_true_batch,
+            cond_batch,
+            max_radius=prior_radius,
+        )
+    else:
+        prior_values = prior_log_prob(e_true_batch, cond_batch)
+
+    prior_values = _as_log_prob_array(
+        prior_values,
+        n_batch,
+        name="prior_log_prob",
+    )
+    posterior = np.full(n_batch, -np.inf, dtype=np.float64)
+    valid = np.isfinite(prior_values)
+
+    if np.any(valid):
+        likelihood_values = likelihood.log_prob(
+            e_meas_batch[valid],
+            e_true_batch[valid],
+            cond_batch[valid],
+        )
+        posterior[valid] = prior_values[valid] + _to_numpy(likelihood_values)
+
+    return float(posterior[0]) if squeeze else posterior
 
 
 def sample_posterior_zeus(
@@ -155,10 +197,12 @@ def sample_posterior_zeus(
     if config.random_seed is not None:
         np.random.seed(config.random_seed)
 
-    log_posterior = make_log_posterior(
+    e_meas_vector = _as_vector(e_meas, "e_meas", n_features=2)
+    cond_vector = _as_vector(cond, "cond")
+    log_posterior = _make_log_posterior_from_vectors(
         likelihood,
-        e_meas,
-        cond,
+        e_meas_vector,
+        cond_vector,
         prior_log_prob=prior_log_prob,
         prior_radius=config.prior_radius,
     )
@@ -177,19 +221,45 @@ def sample_posterior_zeus(
         if not np.all(np.isfinite(initial_log_prob)):
             raise ValueError("initial_state contains walkers with non-finite log posterior")
 
-    sampler = zeus.EnsembleSampler(
-        config.n_walkers,
-        2,
-        log_posterior,
-        vectorize=True,
-        verbose=config.verbose,
-        light_mode=config.light_mode,
-    )
-    sampler.run_mcmc(
-        initial_state_array,
-        config.n_steps,
-        progress=config.progress,
-    )
+    pool = None
+    sampler_log_posterior = log_posterior
+    vectorize = True
+    if config.n_processes > 1:
+        pool = _make_log_posterior_pool(
+            config.n_processes,
+            likelihood,
+            e_meas_vector,
+            cond_vector,
+            prior_log_prob,
+            config.prior_radius,
+        )
+        sampler_log_posterior = _parallel_log_posterior
+        vectorize = False
+
+    try:
+        sampler = zeus.EnsembleSampler(
+            config.n_walkers,
+            2,
+            sampler_log_posterior,
+            pool=pool,
+            vectorize=vectorize,
+            verbose=config.verbose,
+            light_mode=config.light_mode,
+        )
+        sampler.run_mcmc(
+            initial_state_array,
+            config.n_steps,
+            progress=config.progress,
+        )
+    except BaseException:
+        if pool is not None:
+            pool.terminate()
+            pool.join()
+        raise
+    else:
+        if pool is not None:
+            pool.close()
+            pool.join()
 
     return MCMCResult(
         samples=sampler.get_chain(
@@ -247,6 +317,74 @@ def initialize_walkers(
     raise ValueError(
         "Could not initialize all walkers at finite posterior probability. "
         "Provide an explicit initial_state or loosen the prior."
+    )
+
+
+def _make_log_posterior_pool(
+    n_processes: int,
+    likelihood: ShapeFlowLikelihood,
+    e_meas_vector: np.ndarray,
+    cond_vector: np.ndarray,
+    prior_log_prob: PriorLogProb | None,
+    prior_radius: float,
+) -> Any:
+    return mp.get_context().Pool(
+        processes=n_processes,
+        initializer=_initialize_parallel_log_posterior,
+        initargs=(
+            likelihood,
+            e_meas_vector,
+            cond_vector,
+            prior_log_prob,
+            prior_radius,
+        ),
+    )
+
+
+def _initialize_parallel_log_posterior(
+    likelihood: ShapeFlowLikelihood,
+    e_meas_vector: np.ndarray,
+    cond_vector: np.ndarray,
+    prior_log_prob: PriorLogProb | None,
+    prior_radius: float,
+) -> None:
+    global _PARALLEL_LIKELIHOOD
+    global _PARALLEL_E_MEAS
+    global _PARALLEL_COND
+    global _PARALLEL_PRIOR_LOG_PROB
+    global _PARALLEL_PRIOR_RADIUS
+
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+    except ImportError:  # pragma: no cover
+        pass
+
+    likelihood.model.eval()
+    _PARALLEL_LIKELIHOOD = likelihood
+    _PARALLEL_E_MEAS = e_meas_vector
+    _PARALLEL_COND = cond_vector
+    _PARALLEL_PRIOR_LOG_PROB = prior_log_prob
+    _PARALLEL_PRIOR_RADIUS = prior_radius
+
+
+def _parallel_log_posterior(e_true: np.ndarray) -> float:
+    if (
+        _PARALLEL_LIKELIHOOD is None
+        or _PARALLEL_E_MEAS is None
+        or _PARALLEL_COND is None
+    ):
+        raise RuntimeError("parallel log-posterior worker is not initialized")
+    return float(
+        _evaluate_log_posterior(
+            _PARALLEL_LIKELIHOOD,
+            _PARALLEL_E_MEAS,
+            _PARALLEL_COND,
+            e_true,
+            prior_log_prob=_PARALLEL_PRIOR_LOG_PROB,
+            prior_radius=_PARALLEL_PRIOR_RADIUS,
+        )
     )
 
 

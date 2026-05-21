@@ -81,6 +81,8 @@ started fresh for the resumed run.
 Training stops when the validation loss has not dropped for
 `stop_after_epoch` consecutive epochs, or when `maximum_training_epoch` is
 reached.
+The current flow checkpoint is also saved to the output path every 10 epochs;
+the final save restores and writes the best validation state.
 
 ## Python API
 
@@ -122,7 +124,13 @@ from the saved flow checkpoint:
 from shape_flow import MCMCConfig, load_likelihood, sample_posterior_zeus
 
 likelihood = load_likelihood("checkpoints/shape_flow.pt", map_location="cpu")
-config = MCMCConfig(n_walkers=32, n_steps=1000, burn_in=200, thin=2)
+config = MCMCConfig(
+    n_walkers=32,
+    n_steps=1000,
+    burn_in=200,
+    thin=2,
+    n_processes=4,
+)
 
 result = sample_posterior_zeus(
     likelihood,
@@ -137,6 +145,9 @@ samples = result.samples
 The default prior is uniform inside
 `sqrt(e_true_1**2 + e_true_2**2) <= prior_radius`. Pass a vectorized
 `prior_log_prob(e_true_batch, cond_batch)` function to use a different prior.
+Set `n_processes > 1` to evaluate walker log probabilities through a
+`multiprocessing.Pool`; custom priors used with multiprocessing must be
+pickleable.
 
 You can also run the sampler from the command line:
 
@@ -145,6 +156,7 @@ python scripts/sample_shape_posterior.py \
   --checkpoint checkpoints/shape_flow.pt \
   --data training_arrays.npy \
   --index 0 \
+  --n-processes 4 \
   --output posterior_samples.npz
 ```
 

@@ -22,6 +22,11 @@ def test_uniform_ellipticity_prior():
     assert not np.isfinite(log_prior[1])
 
 
+def test_mcmc_config_rejects_invalid_process_count():
+    with pytest.raises(ValueError, match="n_processes"):
+        MCMCConfig(n_processes=0)
+
+
 def test_zeus_posterior_sampling_shapes():
     generator = torch.Generator().manual_seed(11)
     n_samples = 64
@@ -51,6 +56,7 @@ def test_zeus_posterior_sampling_shapes():
         thin=1,
         random_seed=11,
         progress=False,
+        n_processes=2,
     )
 
     result = sample_posterior_zeus(

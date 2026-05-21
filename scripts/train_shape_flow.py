@@ -228,6 +228,7 @@ def main() -> None:
         config=config,
         target_scaler=resumed.target_scaler if resumed is not None else None,
         context_scaler=resumed.context_scaler if resumed is not None else None,
+        device=device,
     )
 
     # 3. Neural density estimator construction/loading.

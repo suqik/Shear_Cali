@@ -104,6 +104,11 @@ class ShapeDataset(Dataset[tuple[Tensor, Tensor]]):
     def __getitem__(self, index: int) -> tuple[Tensor, Tensor]:
         return self.x[index], self.context[index]
 
+    def to(self, device: torch.device | str) -> "ShapeDataset":
+        self.x = self.x.to(device)
+        self.context = self.context.to(device)
+        return self
+
 
 def split_arrays(
     e_true: Tensor | Any,

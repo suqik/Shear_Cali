@@ -119,10 +119,12 @@ def prepare_training_data(
     config: TrainingConfig,
     target_scaler: Standardizer | None = None,
     context_scaler: Standardizer | None = None,
+    device: torch.device | str | None = None,
 ) -> PreparedTrainingData:
     """Split arrays, fit scalers on training data, and build data loaders."""
 
     torch.manual_seed(config.seed)
+    device = torch.device(device) if device is not None else resolve_device(config)
     train_arrays, val_arrays = split_arrays(
         e_true,
         e_meas,
@@ -143,6 +145,8 @@ def prepare_training_data(
         target_scaler.transform(val_arrays.e_meas),
         context_scaler.transform(val_arrays.context()),
     )
+    train_dataset.to(device)
+    val_dataset.to(device)
 
     generator = torch.Generator().manual_seed(config.seed)
     train_loader = DataLoader(
@@ -212,6 +216,9 @@ def train_model(
     """Fit the flow model and restore the best validation state."""
 
     device = torch.device(device) if device is not None else resolve_device(config)
+    model.to(device)
+    _move_loader_dataset_to_device(train_loader, device)
+    _move_loader_dataset_to_device(val_loader, device)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -229,10 +236,9 @@ def train_model(
             model,
             train_loader,
             optimizer,
-            device=device,
             grad_clip_norm=config.grad_clip_norm,
         )
-        val_nll = _evaluate_nll(model, val_loader, device=device)
+        val_nll = _evaluate_nll(model, val_loader)
         history["train_nll"].append(train_nll)
         history["val_nll"].append(val_nll)
 
@@ -317,6 +323,7 @@ def train_shape_flow(
         config=config,
         target_scaler=resumed.target_scaler if resumed is not None else None,
         context_scaler=resumed.context_scaler if resumed is not None else None,
+        device=device,
     )
     if resumed is None:
         model = build_shape_flow(
@@ -371,7 +378,6 @@ def _train_one_epoch(
     loader: DataLoader[tuple[Tensor, Tensor]],
     optimizer: torch.optim.Optimizer,
     *,
-    device: torch.device,
     grad_clip_norm: float,
 ) -> float:
     model.train()
@@ -379,8 +385,6 @@ def _train_one_epoch(
     total_count = 0
 
     for x, context in loader:
-        x = x.to(device)
-        context = context.to(device)
         optimizer.zero_grad(set_to_none=True)
         loss = -model.log_prob(x, context).mean()
         loss.backward()
@@ -398,22 +402,28 @@ def _train_one_epoch(
 def _evaluate_nll(
     model: ConditionalShapeFlow,
     loader: DataLoader[tuple[Tensor, Tensor]],
-    *,
-    device: torch.device,
 ) -> float:
     model.eval()
     total_loss = 0.0
     total_count = 0
 
     for x, context in loader:
-        x = x.to(device)
-        context = context.to(device)
         loss = -model.log_prob(x, context).mean()
         batch_count = x.shape[0]
         total_loss += float(loss.detach().cpu()) * batch_count
         total_count += batch_count
 
     return total_loss / max(total_count, 1)
+
+
+def _move_loader_dataset_to_device(
+    loader: DataLoader[tuple[Tensor, Tensor]],
+    device: torch.device,
+) -> None:
+    dataset = loader.dataset
+    move_to_device = getattr(dataset, "to", None)
+    if move_to_device is not None:
+        move_to_device(device)
 
 
 def _training_config_to_dict(config: TrainingConfig) -> dict[str, Any]:

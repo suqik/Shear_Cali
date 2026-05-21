@@ -23,6 +23,8 @@ LOGGER = logging.getLogger("shape_flow.show_mcmc_figure")
 DEFAULT_CONFIG = ROOT / "configs" / "sample_shape_posterior.ini"
 CONFIG_OPTIONS = (
     ConfigOption("input", "paths", "output", "path"),
+    ConfigOption("data", "paths", "data", "path"),
+    ConfigOption("index", "observation", "index", "int", 0),
 )
 
 
@@ -50,29 +52,44 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--savefig", type=Path, help="Optional output figure path.")
     parser.add_argument(
+        "--chain-savefig",
+        type=Path,
+        help="Optional output path for the separate chain figure.",
+    )
+    parser.add_argument(
+        "--data",
+        type=Path,
+        help="Structured .npy data file used to read truth e1_t/e2_t.",
+    )
+    parser.add_argument("--index", type=int, help="Row index used to read truth.")
+    parser.add_argument(
         "--show",
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Show the figure interactively. Defaults to true when --savefig is absent.",
     )
-    parser.add_argument("--bins", type=int, default=40)
     parser.add_argument("--dpi", type=int, default=150)
     parser.add_argument("--max-points", type=int, default=5000)
     parser.add_argument("--truth", type=float, nargs=2, help="Optional true e1 e2.")
-    parser.add_argument("--title", default="MCMC posterior samples")
+    parser.add_argument("--title", default="MCMC posterior contour")
 
     args = merge_config(parser.parse_args(), CONFIG_OPTIONS)
     if args.input is None:
         raise ValueError("Provide --input or [paths] output in the existing config")
-    if args.bins < 1:
-        raise ValueError("bins must be positive")
     if args.dpi < 1:
         raise ValueError("dpi must be positive")
     if args.max_points < 1:
         raise ValueError("max_points must be positive")
     if args.show is None:
-        args.show = args.savefig is None
+        args.show = args.savefig is None and args.chain_savefig is None
+    if args.chain_savefig is None and args.savefig is not None:
+        args.chain_savefig = chain_figure_path(args.savefig)
     return args
+
+
+def chain_figure_path(path: Path) -> Path:
+    suffix = path.suffix or ".png"
+    return path.with_name(f"{path.stem}_chain{suffix}")
 
 
 def load_posterior_file(path: Path) -> SimpleNamespace:
@@ -90,66 +107,136 @@ def load_posterior_file(path: Path) -> SimpleNamespace:
             log_prob_chain=_optional_array(data, "log_prob_chain"),
             initial_state=_optional_array(data, "initial_state"),
             e_meas=_optional_array(data, "e_meas"),
+            e_true=_optional_array(data, "e_true"),
             ncall=_optional_int(data, "ncall"),
             efficiency=_optional_float(data, "efficiency"),
         )
 
 
-def make_figure(
+def resolve_truth(args: argparse.Namespace, plot_data: Any) -> np.ndarray | None:
+    if args.truth is not None:
+        return np.asarray(args.truth, dtype=np.float64)
+    if args.data is not None:
+        return load_truth_from_data_file(args.data, args.index)
+    if plot_data.e_true is not None:
+        truth = np.asarray(plot_data.e_true, dtype=np.float64)
+        if truth.shape == (2,):
+            return truth
+    return None
+
+
+def load_truth_from_data_file(path: Path, index: int) -> np.ndarray:
+    loaded = np.load(path, allow_pickle=False)
+    try:
+        if isinstance(loaded, np.lib.npyio.NpzFile):
+            if "e_true" in loaded.files:
+                return np.asarray(loaded["e_true"][index], dtype=np.float64)
+            missing = {"e1_t", "e2_t"} - set(loaded.files)
+            if missing:
+                raise KeyError(f"{path} is missing truth arrays: {sorted(missing)}")
+            return np.asarray(
+                [loaded["e1_t"][index], loaded["e2_t"][index]],
+                dtype=np.float64,
+            )
+
+        if loaded.dtype.names is None:
+            raise ValueError(f"{path} must be a structured array with e1_t/e2_t")
+        missing = {"e1_t", "e2_t"} - set(loaded.dtype.names)
+        if missing:
+            raise KeyError(f"{path} is missing truth fields: {sorted(missing)}")
+        return np.asarray(
+            [loaded["e1_t"][index], loaded["e2_t"][index]],
+            dtype=np.float64,
+        )
+    finally:
+        close = getattr(loaded, "close", None)
+        if close is not None:
+            close()
+
+
+def make_contour_figure(
     plot_data: Any,
     *,
-    bins: int,
     max_points: int,
     title: str,
     truth: np.ndarray | None,
     show: bool,
 ):
     plt = import_pyplot(show=show)
-    samples = plot_data.samples
-    plotted = select_plot_points(samples, max_points=max_points)
+    patch_matplotlib_pandas_indexing()
+    import zeus
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 8), constrained_layout=True)
-    ax_joint, ax_hist, ax_trace, ax_info = axes.ravel()
-
-    hist = ax_joint.hist2d(plotted[:, 0], plotted[:, 1], bins=bins, cmap="viridis")
-    fig.colorbar(hist[3], ax=ax_joint, label="count")
-    mean = samples.mean(axis=0)
-    ax_joint.scatter(mean[0], mean[1], color="white", edgecolor="black", label="mean")
-    if plot_data.e_meas is not None and plot_data.e_meas.shape == (2,):
-        ax_joint.scatter(
-            plot_data.e_meas[0],
-            plot_data.e_meas[1],
-            color="tab:red",
-            marker="+",
-            s=80,
-            label="measured",
-        )
+    samples = select_plot_points(plot_data.samples, max_points=max_points)
+    fig, axes = zeus.cornerplot(
+        samples,
+        labels=[r"$e_{1,t}$", r"$e_{2,t}$"],
+        truth=truth,
+        size=(8, 8),
+    )
+    fig.suptitle(title)
     if truth is not None:
-        ax_joint.scatter(
+        axes[1, 0].scatter(
             truth[0],
             truth[1],
             color="black",
             marker="x",
-            s=70,
+            s=80,
+            linewidth=1.5,
+            zorder=10,
             label="truth",
         )
-    ax_joint.set_xlabel("intrinsic e1")
-    ax_joint.set_ylabel("intrinsic e2")
-    ax_joint.set_title(title)
-    ax_joint.set_aspect("equal", adjustable="box")
-    ax_joint.legend(loc="best")
+        axes[1, 0].legend(loc="best")
+    return fig
 
-    ax_hist.hist(samples[:, 0], bins=bins, alpha=0.65, label="e1")
-    ax_hist.hist(samples[:, 1], bins=bins, alpha=0.65, label="e2")
-    ax_hist.axvline(mean[0], color="tab:blue", linewidth=1)
-    ax_hist.axvline(mean[1], color="tab:orange", linewidth=1)
-    ax_hist.set_xlabel("intrinsic shape")
-    ax_hist.set_ylabel("count")
-    ax_hist.set_title("Marginal samples")
-    ax_hist.legend(loc="best")
 
-    plot_trace(ax_trace, plot_data.chain)
-    write_summary(ax_info, plot_data)
+def patch_matplotlib_pandas_indexing() -> None:
+    """Keep Zeus' seaborn-based cornerplot working with newer pandas."""
+
+    import matplotlib.axes._base as axes_base
+    import matplotlib.cbook as cbook
+
+    original = cbook._check_1d
+    if getattr(original, "_shape_flow_patched", False):
+        return
+
+    def check_1d(values):
+        if hasattr(values, "to_numpy"):
+            values = values.to_numpy()
+        return original(values)
+
+    check_1d._shape_flow_patched = True
+    cbook._check_1d = check_1d
+    axes_base._check_1d = check_1d
+
+
+def make_chain_figure(
+    plot_data: Any,
+    *,
+    title: str,
+    show: bool,
+):
+    plt = import_pyplot(show=show)
+    fig, axes = plt.subplots(2, 1, figsize=(10, 6), sharex=True, constrained_layout=True)
+    chain = plot_data.chain
+    if chain is None:
+        axes[0].text(0.5, 0.5, "chain unavailable", ha="center", va="center")
+        axes[1].text(0.5, 0.5, "chain unavailable", ha="center", va="center")
+        for ax in axes:
+            ax.set_axis_off()
+        return fig
+
+    values = np.asarray(chain, dtype=np.float64)
+    if values.ndim != 3 or values.shape[2] != 2:
+        axes[0].text(0.5, 0.5, "chain shape unsupported", ha="center", va="center")
+        axes[1].text(0.5, 0.5, "chain shape unsupported", ha="center", va="center")
+        for ax in axes:
+            ax.set_axis_off()
+        return fig
+
+    plot_chain_component(axes[0], values[:, :, 0], label=r"$e_{1,t}$")
+    plot_chain_component(axes[1], values[:, :, 1], label=r"$e_{2,t}$")
+    axes[1].set_xlabel("step")
+    fig.suptitle(title)
     return fig
 
 
@@ -175,47 +262,14 @@ def select_plot_points(samples: np.ndarray, *, max_points: int) -> np.ndarray:
     return samples[indices]
 
 
-def plot_trace(ax, chain: np.ndarray | None) -> None:
-    if chain is None:
-        ax.text(0.5, 0.5, "chain unavailable", ha="center", va="center")
-        ax.set_axis_off()
-        return
-    values = np.asarray(chain, dtype=np.float64)
-    if values.ndim != 3 or values.shape[2] != 2:
-        ax.text(0.5, 0.5, "chain shape unsupported", ha="center", va="center")
-        ax.set_axis_off()
-        return
-    mean_trace = values.mean(axis=1)
-    ax.plot(mean_trace[:, 0], label="mean e1")
-    ax.plot(mean_trace[:, 1], label="mean e2")
+def plot_chain_component(ax, values: np.ndarray, *, label: str) -> None:
+    steps = np.arange(values.shape[0])
+    for walker in range(values.shape[1]):
+        ax.plot(steps, values[:, walker], color="tab:blue", alpha=0.12, linewidth=0.8)
+    ax.plot(steps, values.mean(axis=1), color="black", linewidth=1.6, label="mean")
     ax.set_xlabel("step")
-    ax.set_ylabel("ensemble mean")
-    ax.set_title("Trace")
+    ax.set_ylabel(label)
     ax.legend(loc="best")
-
-
-def write_summary(ax, plot_data: Any) -> None:
-    samples = plot_data.samples
-    mean = samples.mean(axis=0)
-    std = samples.std(axis=0)
-    lines = [
-        f"samples: {samples.shape[0]}",
-        f"mean e1: {mean[0]:.5f}",
-        f"mean e2: {mean[1]:.5f}",
-        f"std e1: {std[0]:.5f}",
-        f"std e2: {std[1]:.5f}",
-    ]
-    if plot_data.ncall is not None:
-        lines.append(f"ncall: {plot_data.ncall}")
-    if plot_data.efficiency is not None and np.isfinite(plot_data.efficiency):
-        lines.append(f"efficiency: {plot_data.efficiency:.5f}")
-    if plot_data.log_prob is not None:
-        log_prob = np.asarray(plot_data.log_prob, dtype=np.float64)
-        lines.append(f"max log prob: {np.nanmax(log_prob):.5f}")
-
-    ax.text(0.02, 0.98, "\n".join(lines), va="top", family="monospace")
-    ax.set_axis_off()
-    ax.set_title("Summary")
 
 
 def _optional_array(data: np.lib.npyio.NpzFile, name: str) -> np.ndarray | None:
@@ -245,23 +299,37 @@ def main() -> None:
     LOGGER.info("stage=posterior_loading path=%s", args.input)
     plot_data = load_posterior_file(args.input)
 
-    truth = None if args.truth is None else np.asarray(args.truth, dtype=np.float64)
-    LOGGER.info("stage=figure_building samples=%d", plot_data.samples.shape[0])
-    fig = make_figure(
+    truth = resolve_truth(args, plot_data)
+    if truth is not None:
+        LOGGER.info("stage=truth_loaded e1_t=%.6f e2_t=%.6f", truth[0], truth[1])
+    else:
+        LOGGER.info("stage=truth_unavailable")
+
+    LOGGER.info("stage=contour_building samples=%d", plot_data.samples.shape[0])
+    contour_fig = make_contour_figure(
         plot_data,
-        bins=args.bins,
         max_points=args.max_points,
         title=args.title,
         truth=truth,
         show=args.show,
     )
+    LOGGER.info("stage=chain_building")
+    chain_fig = make_chain_figure(
+        plot_data,
+        title="MCMC chain",
+        show=args.show,
+    )
 
     if args.savefig is not None:
         args.savefig.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(args.savefig, dpi=args.dpi)
-        LOGGER.info("stage=figure_saved path=%s", args.savefig)
+        contour_fig.savefig(args.savefig, dpi=args.dpi)
+        LOGGER.info("stage=contour_saved path=%s", args.savefig)
+    if args.chain_savefig is not None:
+        args.chain_savefig.parent.mkdir(parents=True, exist_ok=True)
+        chain_fig.savefig(args.chain_savefig, dpi=args.dpi)
+        LOGGER.info("stage=chain_saved path=%s", args.chain_savefig)
     if args.show:
-        LOGGER.info("stage=figure_show")
+        LOGGER.info("stage=figures_show")
         import_pyplot(show=True).show()
 
 

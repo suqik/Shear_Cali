@@ -95,17 +95,21 @@ def test_show_mcmc_figure_uses_sampler_output_config():
         config=ROOT / "configs" / "sample_shape_posterior.ini",
         input=None,
         savefig=None,
+        chain_savefig=None,
+        data=None,
+        index=None,
         show=None,
-        bins=40,
         dpi=150,
         max_points=5000,
         truth=None,
-        title="MCMC posterior samples",
+        title="MCMC posterior contour",
     )
 
     merged = module.merge_config(args, module.CONFIG_OPTIONS)
 
     assert merged.input == ROOT / "posterior_samples.npz"
+    assert merged.data == ROOT / "training_arrays.npy"
+    assert merged.index == 0
 
 
 def test_show_mcmc_figure_loads_posterior_npz(tmp_path):
@@ -119,6 +123,17 @@ def test_show_mcmc_figure_loads_posterior_npz(tmp_path):
     np.testing.assert_allclose(loaded.samples, samples)
     assert loaded.log_prob.shape == (2,)
     assert loaded.ncall == 12
+
+
+def test_show_mcmc_figure_loads_truth_from_structured_npy(tmp_path):
+    module = load_script("scripts/show_mcmc_figure.py")
+    path = tmp_path / "training_arrays.npy"
+    data = structured_shape_data()
+    np.save(path, data)
+
+    truth = module.load_truth_from_data_file(path, index=1)
+
+    np.testing.assert_allclose(truth, [0.3, -0.4])
 
 
 def test_train_loader_accepts_structured_npy(tmp_path):

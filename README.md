@@ -179,6 +179,11 @@ python scripts/show_mcmc_figure.py \
   --no-show
 ```
 
+The contour figure uses Zeus' built-in `cornerplot` and marks the truth from
+`e1_t/e2_t` using the configured data file and row index. The chain trace is
+written as a separate figure; if `--chain-savefig` is omitted, it is derived
+from `--savefig`, for example `posterior_mcmc_chain.png`.
+
 ## Demo Notebook
 
 Open [notebooks/shape_flow_demo.ipynb](notebooks/shape_flow_demo.ipynb) for a

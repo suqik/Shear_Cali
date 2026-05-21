@@ -25,13 +25,16 @@ For the Jupyter demo and plotting dependencies:
 python -m pip install -e ".[demo]"
 ```
 
-## Train From An NPZ
+## Train From A Structured NPY
 
-The NPZ must contain arrays named `e_true`, `e_meas`, and `cond`.
+The main training input is a structured `.npy` array with fields
+`e1_t`, `e2_t`, `e1`, `e2`, `hlf`, `mag`, and `snr`.
+The loader builds `e_true = [e1_t, e2_t]`, `e_meas = [e1, e2]`, and
+`cond = [hlf, mag, snr]`.
 
 ```bash
 python scripts/train_shape_flow.py \
-  --data training_arrays.npz \
+  --data training_arrays.npy \
   --output checkpoints/shape_flow.pt \
   --maximum-training-epoch 100 \
   --stop-after-epoch 20 \
@@ -140,7 +143,7 @@ You can also run the sampler from the command line:
 ```bash
 python scripts/sample_shape_posterior.py \
   --checkpoint checkpoints/shape_flow.pt \
-  --data training_arrays.npz \
+  --data training_arrays.npy \
   --index 0 \
   --output posterior_samples.npz
 ```

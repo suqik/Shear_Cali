@@ -16,6 +16,9 @@ if str(ROOT) not in sys.path:
 from shape_flow.utils import ConfigOption, merge_config, validate_sampling_config
 
 
+OBSERVED_FIELD_NAMES = ("e1", "e2")
+COND_FIELD_NAMES = ("hlf", "mag", "snr")
+
 CONFIG_OPTIONS = (
     ConfigOption("checkpoint", "paths", "checkpoint", "path"),
     ConfigOption("output", "paths", "output", "path"),
@@ -44,7 +47,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, help="INI configuration file.")
     parser.add_argument("--checkpoint", type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--data", type=Path, help="NPZ containing e_meas and cond arrays.")
+    parser.add_argument(
+        "--data",
+        type=Path,
+        help="Structured .npy file containing observed shape and condition fields.",
+    )
     parser.add_argument("--index", type=int, help="Row to sample from --data.")
     parser.add_argument("--e-meas", type=float, nargs=2, help="Observed e1 e2.")
     parser.add_argument("--cond", type=float, nargs="*", help="Condition values.")
@@ -78,15 +85,76 @@ def parse_args() -> argparse.Namespace:
 
 def load_observation(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]:
     if args.data is not None:
-        with np.load(args.data) as data:
-            missing = {"e_meas", "cond"} - set(data.files)
-            if missing:
-                raise KeyError(f"NPZ file is missing arrays: {sorted(missing)}")
-            return data["e_meas"][args.index], data["cond"][args.index]
+        return load_observation_file(args.data, args.index)
 
     if args.e_meas is None or args.cond is None:
         raise ValueError("Provide either --data or both --e-meas and --cond")
     return np.asarray(args.e_meas, dtype=np.float32), np.asarray(args.cond, dtype=np.float32)
+
+
+def load_observation_file(path: Path, index: int) -> tuple[np.ndarray, np.ndarray]:
+    loaded = np.load(path, allow_pickle=False)
+    try:
+        if isinstance(loaded, np.lib.npyio.NpzFile):
+            return _observation_from_npz(loaded, index)
+        return _observation_from_structured(loaded, index, source=str(path))
+    finally:
+        close = getattr(loaded, "close", None)
+        if close is not None:
+            close()
+
+
+def _observation_from_npz(
+    data: np.lib.npyio.NpzFile,
+    index: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    names = set(data.files)
+    if {"e_meas", "cond"}.issubset(names):
+        return (
+            np.asarray(data["e_meas"][index], dtype=np.float32),
+            np.asarray(data["cond"][index], dtype=np.float32),
+        )
+    return _observation_from_fields(data.__getitem__, names, index, source="NPZ file")
+
+
+def _observation_from_structured(
+    data: np.ndarray,
+    index: int,
+    *,
+    source: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    if data.dtype.names is None:
+        raise ValueError(
+            f"{source} must be a structured array with fields "
+            f"{OBSERVED_FIELD_NAMES + COND_FIELD_NAMES}"
+        )
+    names = set(data.dtype.names)
+    if {"e_meas", "cond"}.issubset(names):
+        return (
+            np.asarray(data["e_meas"][index], dtype=np.float32),
+            np.asarray(data["cond"][index], dtype=np.float32),
+        )
+    return _observation_from_fields(data.__getitem__, names, index, source=source)
+
+
+def _observation_from_fields(
+    get_column,
+    names: set[str],
+    index: int,
+    *,
+    source: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    required = OBSERVED_FIELD_NAMES + COND_FIELD_NAMES
+    missing = [name for name in required if name not in names]
+    if missing:
+        raise KeyError(f"{source} is missing fields/arrays: {missing}")
+    e_meas = _row_from_fields(get_column, OBSERVED_FIELD_NAMES, index)
+    cond = _row_from_fields(get_column, COND_FIELD_NAMES, index)
+    return e_meas, cond
+
+
+def _row_from_fields(get_column, names: tuple[str, ...], index: int) -> np.ndarray:
+    return np.asarray([get_column(name)[index] for name in names], dtype=np.float32)
 
 
 def main() -> None:

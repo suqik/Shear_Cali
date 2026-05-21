@@ -2,6 +2,8 @@ import argparse
 import importlib.util
 from pathlib import Path
 
+import numpy as np
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -42,7 +44,7 @@ def test_train_config_file_merges_defaults_and_paths():
     merged = module.merge_config(args, module.CONFIG_OPTIONS)
     module.validate_training_config(merged)
 
-    assert merged.data == ROOT / "training_arrays.npz"
+    assert merged.data == ROOT / "training_arrays.npy"
     assert merged.output == ROOT / "checkpoints" / "shape_flow.pt"
     assert merged.resume_checkpoint == ROOT / "checkpoints" / "previous.pt"
     assert merged.hidden_features == [128, 128]
@@ -79,6 +81,57 @@ def test_sampler_config_file_allows_cli_override():
 
     assert merged.checkpoint == ROOT / "checkpoints" / "shape_flow.pt"
     assert merged.output == ROOT / "posterior_samples.npz"
+    assert merged.data == ROOT / "training_arrays.npy"
     assert merged.index == 3
     assert merged.n_walkers == 40
     assert merged.progress is False
+
+
+def test_train_loader_accepts_structured_npy(tmp_path):
+    module = load_script("scripts/train_shape_flow.py")
+    path = tmp_path / "training_arrays.npy"
+    data = structured_shape_data()
+    np.save(path, data)
+
+    args = argparse.Namespace(data=path, e_true=None, e_meas=None, cond=None)
+    e_true, e_meas, cond = module.load_arrays(args)
+
+    np.testing.assert_allclose(e_true, [[0.1, -0.2], [0.3, -0.4]])
+    np.testing.assert_allclose(e_meas, [[0.11, -0.21], [0.31, -0.41]])
+    np.testing.assert_allclose(cond, [[1.2, 23.0, 40.0], [1.4, 24.0, 60.0]])
+
+
+def test_sampler_loader_accepts_structured_npy(tmp_path):
+    module = load_script("scripts/sample_shape_posterior.py")
+    path = tmp_path / "training_arrays.npy"
+    data = structured_shape_data()
+    np.save(path, data)
+
+    args = argparse.Namespace(data=path, index=1, e_meas=None, cond=None)
+    e_meas, cond = module.load_observation(args)
+
+    np.testing.assert_allclose(e_meas, [0.31, -0.41])
+    np.testing.assert_allclose(cond, [1.4, 24.0, 60.0])
+
+
+def structured_shape_data():
+    data = np.zeros(
+        2,
+        dtype=[
+            ("e1_t", "f4"),
+            ("e2_t", "f4"),
+            ("e1", "f4"),
+            ("e2", "f4"),
+            ("hlf", "f4"),
+            ("mag", "f4"),
+            ("snr", "f4"),
+        ],
+    )
+    data["e1_t"] = [0.1, 0.3]
+    data["e2_t"] = [-0.2, -0.4]
+    data["e1"] = [0.11, 0.31]
+    data["e2"] = [-0.21, -0.41]
+    data["hlf"] = [1.2, 1.4]
+    data["mag"] = [23.0, 24.0]
+    data["snr"] = [40.0, 60.0]
+    return data

@@ -16,6 +16,9 @@ if str(ROOT) not in sys.path:
 from shape_flow.utils import ConfigOption, merge_config, validate_training_config
 
 
+SHAPE_FIELD_NAMES = ("e1_t", "e2_t", "e1", "e2")
+COND_FIELD_NAMES = ("hlf", "mag", "snr")
+
 CONFIG_OPTIONS = (
     ConfigOption("data", "paths", "data", "path"),
     ConfigOption("e_true", "paths", "e_true", "path"),
@@ -54,7 +57,7 @@ def parse_args() -> argparse.Namespace:
     data_group.add_argument(
         "--data",
         type=Path,
-        help="NPZ file containing arrays named e_true, e_meas, and cond.",
+        help="Structured .npy file containing shape and condition fields.",
     )
     data_group.add_argument(
         "--e-true",
@@ -97,21 +100,77 @@ def parse_args() -> argparse.Namespace:
 
 def load_arrays(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if args.data is not None:
-        with np.load(args.data) as data:
-            if {"e_true", "e_meas", "cond"}.issubset(data.files):
-                return data["e_true"], data["e_meas"], data["cond"]
-            required = {"e1_t", "e2_t", "e1", "e2", "hlf", "mag", "snr"}
-            missing = required - set(data.files)
-            if missing:
-                raise KeyError(f"NPZ file is missing arrays: {sorted(missing)}")
-            e_true = np.c_[data["e1_t"], data["e2_t"]]
-            e_meas = np.c_[data["e1"], data["e2"]]
-            cond = np.c_[data["hlf"], data["mag"], data["snr"]]
-            return e_true, e_meas, cond
+        return load_training_data_file(args.data)
 
     if args.e_meas is None or args.cond is None:
         raise ValueError("--e-true requires --e-meas and --cond")
     return np.load(args.e_true), np.load(args.e_meas), np.load(args.cond)
+
+
+def load_training_data_file(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    loaded = np.load(path, allow_pickle=False)
+    try:
+        if isinstance(loaded, np.lib.npyio.NpzFile):
+            return _training_arrays_from_npz(loaded)
+        return _training_arrays_from_structured(loaded, source=str(path))
+    finally:
+        close = getattr(loaded, "close", None)
+        if close is not None:
+            close()
+
+
+def _training_arrays_from_npz(
+    data: np.lib.npyio.NpzFile,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    names = set(data.files)
+    if {"e_true", "e_meas", "cond"}.issubset(names):
+        return (
+            np.asarray(data["e_true"], dtype=np.float32),
+            np.asarray(data["e_meas"], dtype=np.float32),
+            np.asarray(data["cond"], dtype=np.float32),
+        )
+    return _training_arrays_from_fields(data.__getitem__, names, source="NPZ file")
+
+
+def _training_arrays_from_structured(
+    data: np.ndarray,
+    *,
+    source: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if data.dtype.names is None:
+        raise ValueError(
+            f"{source} must be a structured array with fields "
+            f"{SHAPE_FIELD_NAMES + COND_FIELD_NAMES}"
+        )
+    names = set(data.dtype.names)
+    if {"e_true", "e_meas", "cond"}.issubset(names):
+        return (
+            np.asarray(data["e_true"], dtype=np.float32),
+            np.asarray(data["e_meas"], dtype=np.float32),
+            np.asarray(data["cond"], dtype=np.float32),
+        )
+    return _training_arrays_from_fields(data.__getitem__, names, source=source)
+
+
+def _training_arrays_from_fields(
+    get_column,
+    names: set[str],
+    *,
+    source: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    required = SHAPE_FIELD_NAMES + COND_FIELD_NAMES
+    missing = [name for name in required if name not in names]
+    if missing:
+        raise KeyError(f"{source} is missing fields/arrays: {missing}")
+    e_true = _column_stack(get_column, ("e1_t", "e2_t"))
+    e_meas = _column_stack(get_column, ("e1", "e2"))
+    cond = _column_stack(get_column, COND_FIELD_NAMES)
+    return e_true, e_meas, cond
+
+
+def _column_stack(get_column, names: tuple[str, ...]) -> np.ndarray:
+    columns = [np.asarray(get_column(name), dtype=np.float32) for name in names]
+    return np.column_stack(columns)
 
 
 def progress(epoch: int, metrics: dict[str, float]) -> None:

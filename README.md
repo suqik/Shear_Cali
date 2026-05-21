@@ -19,6 +19,12 @@ The context is `torch.cat([e_true, cond], dim=1)`, where `e_true` has shape
 python -m pip install -e ".[test]"
 ```
 
+For the Jupyter demo and plotting dependencies:
+
+```bash
+python -m pip install -e ".[demo]"
+```
+
 ## Train From An NPZ
 
 The NPZ must contain arrays named `e_true`, `e_meas`, and `cond`.
@@ -64,3 +70,9 @@ log_q = log_q_std - sum(log(target_std))
 
 The context scaler is only used to normalize conditioning variables; it does
 not add a likelihood Jacobian.
+
+## Demo Notebook
+
+Open [notebooks/shape_flow_demo.ipynb](notebooks/shape_flow_demo.ipynb) for a
+small synthetic-data example that trains the model, evaluates likelihoods, and
+tests checkpoint reloads.

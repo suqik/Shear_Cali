@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shape-flow"
+version = "0.1.0"
+description = "Conditional normalizing-flow galaxy shape likelihood calibration."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "torch",
+    "zuko",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["shape_flow*"]

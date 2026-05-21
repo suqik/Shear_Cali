@@ -47,6 +47,17 @@ python scripts/train_shape_flow.py \
   --output checkpoints/shape_flow.pt
 ```
 
+The same inputs can be supplied through an INI file parsed with
+`configparser`:
+
+```bash
+python scripts/train_shape_flow.py --config configs/train_shape_flow.ini
+```
+
+Training configs support `[paths]`, `[training]`, and `[model]` sections.
+Command-line flags override values from the config file. Relative paths inside
+the config file are resolved relative to the config file location.
+
 ## Python API
 
 ```python
@@ -105,6 +116,15 @@ python scripts/sample_shape_posterior.py \
   --index 0 \
   --output posterior_samples.npz
 ```
+
+Or use an INI file:
+
+```bash
+python scripts/sample_shape_posterior.py --config configs/sample_shape_posterior.ini
+```
+
+Posterior-sampling configs support `[paths]`, `[observation]`, `[mcmc]`, and
+`[runtime]` sections. Command-line flags override config values.
 
 ## Demo Notebook
 

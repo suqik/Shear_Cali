@@ -71,8 +71,43 @@ log_q = log_q_std - sum(log(target_std))
 The context scaler is only used to normalize conditioning variables; it does
 not add a likelihood Jacobian.
 
+## Posterior MCMC Sampling
+
+After training a likelihood, sample the intrinsic-shape posterior for one
+observed galaxy with `emcee`:
+
+```python
+from shape_flow import MCMCConfig, load_likelihood, sample_posterior_emcee
+
+likelihood = load_likelihood("checkpoints/shape_flow.pt", map_location="cpu")
+config = MCMCConfig(n_walkers=32, n_steps=1000, burn_in=200, thin=2)
+
+result = sample_posterior_emcee(
+    likelihood,
+    e_meas_obs,
+    cond_obs,
+    config=config,
+)
+
+samples = result.samples
+```
+
+The default prior is uniform inside
+`sqrt(e_true_1**2 + e_true_2**2) <= prior_radius`. Pass a vectorized
+`prior_log_prob(e_true_batch, cond_batch)` function to use a different prior.
+
+You can also run the sampler from the command line:
+
+```bash
+python scripts/sample_shape_posterior.py \
+  --checkpoint checkpoints/shape_flow.pt \
+  --data training_arrays.npz \
+  --index 0 \
+  --output posterior_samples.npz
+```
+
 ## Demo Notebook
 
 Open [notebooks/shape_flow_demo.ipynb](notebooks/shape_flow_demo.ipynb) for a
 small synthetic-data example that trains the model, evaluates likelihoods, and
-tests checkpoint reloads.
+tests checkpoint reloads and posterior MCMC sampling.

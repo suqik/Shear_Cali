@@ -33,7 +33,8 @@ The NPZ must contain arrays named `e_true`, `e_meas`, and `cond`.
 python scripts/train_shape_flow.py \
   --data training_arrays.npz \
   --output checkpoints/shape_flow.pt \
-  --epochs 100 \
+  --maximum-training-epoch 100 \
+  --stop-after-epoch 20 \
   --batch-size 512
 ```
 
@@ -58,14 +59,40 @@ Training configs support `[paths]`, `[training]`, and `[model]` sections.
 Command-line flags override values from the config file. Relative paths inside
 the config file are resolved relative to the config file location.
 
+To resume from an existing checkpoint, point `--resume-checkpoint` at the saved
+model/scaler bundle and choose an output path for the continued run:
+
+```bash
+python scripts/train_shape_flow.py \
+  --config configs/train_shape_flow.ini \
+  --resume-checkpoint checkpoints/shape_flow.pt \
+  --output checkpoints/shape_flow_resumed.pt \
+  --maximum-training-epoch 50 \
+  --stop-after-epoch 10 \
+  --learning-rate 5.0e-4
+```
+
+The resume path restores the flow weights and both scalers. The optimizer is
+started fresh for the resumed run.
+
+Training stops when the validation loss has not dropped for
+`stop_after_epoch` consecutive epochs, or when `maximum_training_epoch` is
+reached.
+
 ## Python API
 
 ```python
 from shape_flow import TrainingConfig, load_likelihood, train_shape_flow
 
-config = TrainingConfig(epochs=100, checkpoint_path="checkpoints/shape_flow.pt")
+config = TrainingConfig(
+    maximum_training_epoch=100,
+    stop_after_epoch=20,
+    checkpoint_path="checkpoints/shape_flow.pt",
+)
 result = train_shape_flow(e_true, e_meas, cond, config=config)
 
+# Training returns the flow model and scalers. Build the likelihood only when
+# evaluating or sampling from the saved checkpoint.
 likelihood = load_likelihood("checkpoints/shape_flow.pt", map_location="cpu")
 log_q_std = likelihood.log_prob_standardized(e_meas_new, e_true_new, cond_new)
 log_q = likelihood.log_prob(e_meas_new, e_true_new, cond_new)
@@ -84,8 +111,9 @@ not add a likelihood Jacobian.
 
 ## Posterior MCMC Sampling
 
-After training a likelihood, sample the intrinsic-shape posterior for one
-observed galaxy with `zeus-mcmc`:
+After training a flow checkpoint, sample the intrinsic-shape posterior for one
+observed galaxy with `zeus-mcmc`. The sampling script builds the likelihood
+from the saved flow checkpoint:
 
 ```python
 from shape_flow import MCMCConfig, load_likelihood, sample_posterior_zeus

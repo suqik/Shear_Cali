@@ -1,10 +1,9 @@
 #!/usr/bin/env python
-"""Train the conditional shape-flow likelihood from NumPy arrays."""
+"""Train the conditional shape-flow model from NumPy arrays."""
 
 from __future__ import annotations
 
 import argparse
-import configparser
 import sys
 from pathlib import Path
 
@@ -13,6 +12,37 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from shape_flow.utils import ConfigOption, merge_config, validate_training_config
+
+
+CONFIG_OPTIONS = (
+    ConfigOption("data", "paths", "data", "path"),
+    ConfigOption("e_true", "paths", "e_true", "path"),
+    ConfigOption("e_meas", "paths", "e_meas", "path"),
+    ConfigOption("cond", "paths", "cond", "path"),
+    ConfigOption("output", "paths", "output", "path"),
+    ConfigOption("resume_checkpoint", "paths", "resume_checkpoint", "path"),
+    ConfigOption("stop_after_epoch", "training", "stop_after_epoch", "int", 20),
+    ConfigOption(
+        "maximum_training_epoch",
+        "training",
+        "maximum_training_epoch",
+        "int",
+        None,
+    ),
+    ConfigOption("epochs", "training", "epochs", "int", None),
+    ConfigOption("batch_size", "training", "batch_size", "int", 512),
+    ConfigOption("val_fraction", "training", "val_fraction", "float", 0.2),
+    ConfigOption("learning_rate", "training", "learning_rate", "float", 1.0e-3),
+    ConfigOption("weight_decay", "training", "weight_decay", "float", 1.0e-4),
+    ConfigOption("grad_clip_norm", "training", "grad_clip_norm", "float", 5.0),
+    ConfigOption("seed", "training", "seed", "int", 0),
+    ConfigOption("device", "training", "device", "str", None),
+    ConfigOption("transforms", "model", "transforms", "int", 5),
+    ConfigOption("hidden_features", "model", "hidden_features", "int_list", [128, 128]),
+    ConfigOption("bins", "model", "bins", "int", 8),
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,7 +64,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--e-meas", type=Path, help="Path to e_meas .npy array.")
     parser.add_argument("--cond", type=Path, help="Path to cond .npy array.")
     parser.add_argument("--output", type=Path, help="Checkpoint path.")
-    parser.add_argument("--epochs", type=int)
+    parser.add_argument(
+        "--resume-checkpoint",
+        type=Path,
+        help="Checkpoint to resume model weights and scalers from.",
+    )
+    parser.add_argument(
+        "--stop-after-epoch",
+        type=int,
+        help="Stop after this many epochs without a validation-loss drop.",
+    )
+    parser.add_argument(
+        "--maximum-training-epoch",
+        type=int,
+        help="Hard cap on the number of training epochs.",
+    )
+    parser.add_argument("--epochs", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--val-fraction", type=float)
     parser.add_argument("--learning-rate", type=float)
@@ -45,161 +90,28 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bins", type=int)
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device", default=None, help="Device, e.g. cpu or cuda.")
-    return merge_config(parser.parse_args())
-
-
-def merge_config(args: argparse.Namespace) -> argparse.Namespace:
-    parser = configparser.ConfigParser()
-    config_dir = Path.cwd()
-    if args.config is not None:
-        read_files = parser.read(args.config)
-        if not read_files:
-            raise FileNotFoundError(f"Could not read config file: {args.config}")
-        config_dir = args.config.resolve().parent
-
-    args.data = _path_option(args.data, parser, "paths", "data", config_dir)
-    args.e_true = _path_option(args.e_true, parser, "paths", "e_true", config_dir)
-    args.e_meas = _path_option(args.e_meas, parser, "paths", "e_meas", config_dir)
-    args.cond = _path_option(args.cond, parser, "paths", "cond", config_dir)
-    args.output = _path_option(args.output, parser, "paths", "output", config_dir)
-
-    args.epochs = _int_option(args.epochs, parser, "training", "epochs", 100)
-    args.batch_size = _int_option(args.batch_size, parser, "training", "batch_size", 512)
-    args.val_fraction = _float_option(
-        args.val_fraction,
-        parser,
-        "training",
-        "val_fraction",
-        0.2,
-    )
-    args.learning_rate = _float_option(
-        args.learning_rate,
-        parser,
-        "training",
-        "learning_rate",
-        1.0e-3,
-    )
-    args.weight_decay = _float_option(
-        args.weight_decay,
-        parser,
-        "training",
-        "weight_decay",
-        1.0e-4,
-    )
-    args.grad_clip_norm = _float_option(
-        args.grad_clip_norm,
-        parser,
-        "training",
-        "grad_clip_norm",
-        5.0,
-    )
-    args.seed = _int_option(args.seed, parser, "training", "seed", 0)
-    args.device = _str_option(args.device, parser, "training", "device", None)
-
-    args.transforms = _int_option(args.transforms, parser, "model", "transforms", 5)
-    args.hidden_features = _int_list_option(
-        args.hidden_features,
-        parser,
-        "model",
-        "hidden_features",
-        [128, 128],
-    )
-    args.bins = _int_option(args.bins, parser, "model", "bins", 8)
-
-    if args.data is not None and args.e_true is not None:
-        raise ValueError("Use either data or e_true/e_meas/cond inputs, not both")
-    if args.data is None and args.e_true is None:
-        raise ValueError("Provide data in [paths] or with --data/--e-true")
-    if args.output is None:
-        raise ValueError("Provide output in [paths] or with --output")
+    args = merge_config(parser.parse_args(), CONFIG_OPTIONS)
+    validate_training_config(args)
     return args
 
 
 def load_arrays(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if args.data is not None:
-        try:
-            data = np.load(args.data)
-        except:
-            raise ValueError(f"Could not load {args.data}")
-
-        e_true = np.c_[data['e1_t'], data['e2_t']]
-        e_meas = np.c_[data['e1'], data['e2']]
-        cond   = np.c_[data['hlf'], data['mag'], data['snr']]
-
-        return e_true, e_meas, cond
+        with np.load(args.data) as data:
+            if {"e_true", "e_meas", "cond"}.issubset(data.files):
+                return data["e_true"], data["e_meas"], data["cond"]
+            required = {"e1_t", "e2_t", "e1", "e2", "hlf", "mag", "snr"}
+            missing = required - set(data.files)
+            if missing:
+                raise KeyError(f"NPZ file is missing arrays: {sorted(missing)}")
+            e_true = np.c_[data["e1_t"], data["e2_t"]]
+            e_meas = np.c_[data["e1"], data["e2"]]
+            cond = np.c_[data["hlf"], data["mag"], data["snr"]]
+            return e_true, e_meas, cond
 
     if args.e_meas is None or args.cond is None:
         raise ValueError("--e-true requires --e-meas and --cond")
     return np.load(args.e_true), np.load(args.e_meas), np.load(args.cond)
-
-
-def _path_option(
-    cli_value: Path | None,
-    parser: configparser.ConfigParser,
-    section: str,
-    option: str,
-    base_dir: Path,
-) -> Path | None:
-    if cli_value is not None:
-        return cli_value
-    if not parser.has_option(section, option):
-        return None
-    value = Path(parser.get(section, option))
-    return value if value.is_absolute() else (base_dir / value).resolve()
-
-
-def _str_option(
-    cli_value: str | None,
-    parser: configparser.ConfigParser,
-    section: str,
-    option: str,
-    default: str | None,
-) -> str | None:
-    if cli_value is not None:
-        return cli_value
-    if parser.has_option(section, option):
-        value = parser.get(section, option).strip()
-        return value or None
-    return default
-
-
-def _int_option(
-    cli_value: int | None,
-    parser: configparser.ConfigParser,
-    section: str,
-    option: str,
-    default: int,
-) -> int:
-    if cli_value is not None:
-        return cli_value
-    return parser.getint(section, option, fallback=default)
-
-
-def _float_option(
-    cli_value: float | None,
-    parser: configparser.ConfigParser,
-    section: str,
-    option: str,
-    default: float,
-) -> float:
-    if cli_value is not None:
-        return cli_value
-    return parser.getfloat(section, option, fallback=default)
-
-
-def _int_list_option(
-    cli_value: list[int] | None,
-    parser: configparser.ConfigParser,
-    section: str,
-    option: str,
-    default: list[int],
-) -> list[int]:
-    if cli_value is not None:
-        return cli_value
-    if not parser.has_option(section, option):
-        return default
-    raw = parser.get(section, option)
-    return [int(item.strip()) for item in raw.replace(",", " ").split()]
 
 
 def progress(epoch: int, metrics: dict[str, float]) -> None:
@@ -214,14 +126,25 @@ def progress(epoch: int, metrics: dict[str, float]) -> None:
 def main() -> None:
     args = parse_args()
 
-    from shape_flow import TrainingConfig, load_likelihood, train_shape_flow
+    from shape_flow import (
+        TrainingConfig,
+        build_shape_flow,
+        load_flow_checkpoint,
+        prepare_training_data,
+        resolve_device,
+        save_flow_checkpoint,
+        train_model,
+    )
 
+    # 1. Data loading.
     e_true, e_meas, cond = load_arrays(args)
+
     config = TrainingConfig(
         val_fraction=args.val_fraction,
         seed=args.seed,
         batch_size=args.batch_size,
-        epochs=args.epochs,
+        stop_after_epoch=args.stop_after_epoch,
+        maximum_training_epoch=args.maximum_training_epoch,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         grad_clip_norm=args.grad_clip_norm,
@@ -230,30 +153,67 @@ def main() -> None:
         bins=args.bins,
         device=args.device,
         checkpoint_path=args.output,
+        resume_checkpoint_path=args.resume_checkpoint,
     )
-    result = train_shape_flow(
+
+    # 2. Data preparation and scaler fitting/loading.
+    device = resolve_device(config)
+    resumed = None
+    if args.resume_checkpoint is not None:
+        resumed = load_flow_checkpoint(args.resume_checkpoint, device=device)
+
+    prepared = prepare_training_data(
         e_true,
         e_meas,
         cond,
         config=config,
+        target_scaler=resumed.target_scaler if resumed is not None else None,
+        context_scaler=resumed.context_scaler if resumed is not None else None,
+    )
+
+    # 3. Neural density estimator construction/loading.
+    if resumed is None:
+        model = build_shape_flow(
+            prepared.train_arrays.context_features,
+            config=config,
+            device=device,
+        )
+    else:
+        model = resumed.model
+        if model.config.context_features != prepared.train_arrays.context_features:
+            raise ValueError(
+                "Resume checkpoint context dimension does not match data: "
+                f"{model.config.context_features} != "
+                f"{prepared.train_arrays.context_features}"
+            )
+
+    # 4. Training.
+    trained = train_model(
+        model,
+        prepared.train_loader,
+        prepared.val_loader,
+        config=config,
+        device=device,
         progress_callback=progress,
     )
-    reloaded = load_likelihood(args.output, map_location=args.device or "cpu")
-    n_example = min(5, len(e_meas))
-    example_log_prob = reloaded.log_prob(
-        e_meas[:n_example],
-        e_true[:n_example],
-        cond[:n_example],
+
+    # 5. Flow checkpoint saving.
+    save_flow_checkpoint(
+        trained.model,
+        prepared.target_scaler,
+        prepared.context_scaler,
+        args.output,
+        history=trained.history,
+        best_epoch=trained.best_epoch,
+        best_val_nll=trained.best_val_nll,
+        config=config,
     )
 
     print(f"saved={args.output}")
+    print(f"trained_epochs={len(trained.history['train_nll'])}")
     print(
-        f"best_epoch={result.best_epoch} "
-        f"best_val_nll={result.best_val_nll:.6f}"
-    )
-    print(
-        "example_physical_log_prob="
-        + np.array2string(example_log_prob.numpy(), precision=6)
+        f"best_epoch={trained.best_epoch} "
+        f"best_val_nll={trained.best_val_nll:.6f}"
     )
 
 

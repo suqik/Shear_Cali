@@ -100,7 +100,7 @@ def load_likelihood(
     *,
     map_location: str | torch.device | None = None,
 ) -> ShapeFlowLikelihood:
-    """Load a trained likelihood bundle from disk."""
+    """Load a trained flow checkpoint and wrap it as a likelihood."""
 
     checkpoint = torch.load(path, map_location=map_location or "cpu")
     config = FlowConfig.from_dict(checkpoint["flow_config"])

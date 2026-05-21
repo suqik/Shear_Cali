@@ -23,7 +23,10 @@ def test_train_config_file_merges_defaults_and_paths():
         e_meas=None,
         cond=None,
         output=None,
+        resume_checkpoint=ROOT / "checkpoints" / "previous.pt",
         epochs=None,
+        stop_after_epoch=None,
+        maximum_training_epoch=None,
         batch_size=None,
         val_fraction=None,
         learning_rate=None,
@@ -36,12 +39,16 @@ def test_train_config_file_merges_defaults_and_paths():
         device=None,
     )
 
-    merged = module.merge_config(args)
+    merged = module.merge_config(args, module.CONFIG_OPTIONS)
+    module.validate_training_config(merged)
 
     assert merged.data == ROOT / "training_arrays.npz"
     assert merged.output == ROOT / "checkpoints" / "shape_flow.pt"
+    assert merged.resume_checkpoint == ROOT / "checkpoints" / "previous.pt"
     assert merged.hidden_features == [128, 128]
     assert merged.batch_size == 512
+    assert merged.stop_after_epoch == 20
+    assert merged.maximum_training_epoch == 100
 
 
 def test_sampler_config_file_allows_cli_override():
@@ -67,7 +74,8 @@ def test_sampler_config_file_allows_cli_override():
         verbose=None,
     )
 
-    merged = module.merge_config(args)
+    merged = module.merge_config(args, module.CONFIG_OPTIONS)
+    module.validate_sampling_config(merged)
 
     assert merged.checkpoint == ROOT / "checkpoints" / "shape_flow.pt"
     assert merged.output == ROOT / "posterior_samples.npz"

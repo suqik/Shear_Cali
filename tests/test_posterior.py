@@ -1,11 +1,13 @@
 import pytest
+import tempfile
+from pathlib import Path
 
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
 pytest.importorskip("zuko")
 pytest.importorskip("zeus")
 
-from shape_flow import MCMCConfig, sample_posterior_zeus, train_shape_flow
+from shape_flow import MCMCConfig, load_likelihood, sample_posterior_zeus, train_shape_flow
 from shape_flow.posterior import uniform_ellipticity_prior
 from shape_flow.train import TrainingConfig
 
@@ -27,21 +29,21 @@ def test_zeus_posterior_sampling_shapes():
     cond = torch.randn(n_samples, 2, generator=generator)
     e_meas = e_true + torch.randn(n_samples, 2, generator=generator) * 0.05
 
-    training_config = TrainingConfig(
-        epochs=1,
-        batch_size=16,
-        val_fraction=0.25,
-        hidden_features=(16,),
-        transforms=1,
-        seed=11,
-        device="cpu",
-    )
-    likelihood = train_shape_flow(
-        e_true,
-        e_meas,
-        cond,
-        config=training_config,
-    ).likelihood
+    with tempfile.TemporaryDirectory() as tmpdir:
+        checkpoint = Path(tmpdir) / "shape_flow.pt"
+        training_config = TrainingConfig(
+            stop_after_epoch=2,
+            maximum_training_epoch=1,
+            batch_size=16,
+            val_fraction=0.25,
+            hidden_features=(16,),
+            transforms=1,
+            seed=11,
+            device="cpu",
+            checkpoint_path=checkpoint,
+        )
+        train_shape_flow(e_true, e_meas, cond, config=training_config)
+        likelihood = load_likelihood(checkpoint, map_location="cpu")
     mcmc_config = MCMCConfig(
         n_walkers=8,
         n_steps=8,

@@ -20,7 +20,8 @@ def test_train_save_load_and_log_prob_shapes():
     with tempfile.TemporaryDirectory() as tmpdir:
         checkpoint = Path(tmpdir) / "shape_flow.pt"
         config = TrainingConfig(
-            epochs=1,
+            stop_after_epoch=2,
+            maximum_training_epoch=1,
             batch_size=16,
             val_fraction=0.25,
             hidden_features=(16,),
@@ -32,9 +33,10 @@ def test_train_save_load_and_log_prob_shapes():
         result = train_shape_flow(e_true, e_meas, cond, config=config)
         likelihood = load_likelihood(checkpoint, map_location="cpu")
 
-    log_prob_std = result.likelihood.log_prob_standardized(e_meas[:6], e_true[:6], cond[:6])
+    log_prob_std = likelihood.log_prob_standardized(e_meas[:6], e_true[:6], cond[:6])
     log_prob = likelihood.log_prob(e_meas[:6], e_true[:6], cond[:6])
 
+    assert result.model.config.features == 2
     assert log_prob_std.shape == (6,)
     assert log_prob.shape == (6,)
     assert torch.isfinite(log_prob).all()

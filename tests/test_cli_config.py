@@ -89,6 +89,38 @@ def test_sampler_config_file_allows_cli_override():
     assert merged.progress is False
 
 
+def test_show_mcmc_figure_uses_sampler_output_config():
+    module = load_script("scripts/show_mcmc_figure.py")
+    args = argparse.Namespace(
+        config=ROOT / "configs" / "sample_shape_posterior.ini",
+        input=None,
+        savefig=None,
+        show=None,
+        bins=40,
+        dpi=150,
+        max_points=5000,
+        truth=None,
+        title="MCMC posterior samples",
+    )
+
+    merged = module.merge_config(args, module.CONFIG_OPTIONS)
+
+    assert merged.input == ROOT / "posterior_samples.npz"
+
+
+def test_show_mcmc_figure_loads_posterior_npz(tmp_path):
+    module = load_script("scripts/show_mcmc_figure.py")
+    path = tmp_path / "posterior_samples.npz"
+    samples = np.array([[0.1, 0.2], [0.2, 0.3]], dtype=np.float32)
+    np.savez(path, samples=samples, log_prob=np.array([1.0, 2.0]), ncall=12)
+
+    loaded = module.load_posterior_file(path)
+
+    np.testing.assert_allclose(loaded.samples, samples)
+    assert loaded.log_prob.shape == (2,)
+    assert loaded.ncall == 12
+
+
 def test_train_loader_accepts_structured_npy(tmp_path):
     module = load_script("scripts/train_shape_flow.py")
     path = tmp_path / "training_arrays.npy"

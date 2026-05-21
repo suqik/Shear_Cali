@@ -169,6 +169,16 @@ python scripts/sample_shape_posterior.py --config configs/sample_shape_posterior
 Posterior-sampling configs support `[paths]`, `[observation]`, `[mcmc]`, and
 `[runtime]` sections. Command-line flags override config values.
 
+To inspect the saved MCMC output, use the existing sampler config to locate
+`[paths] output` and provide plotting options on the command line:
+
+```bash
+python scripts/show_mcmc_figure.py \
+  --config configs/sample_shape_posterior.ini \
+  --savefig posterior_mcmc.png \
+  --no-show
+```
+
 ## Demo Notebook
 
 Open [notebooks/shape_flow_demo.ipynb](notebooks/shape_flow_demo.ipynb) for a

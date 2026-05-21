@@ -117,11 +117,16 @@ def merge_config(args: argparse.Namespace) -> argparse.Namespace:
 
 def load_arrays(args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if args.data is not None:
-        with np.load(args.data) as data:
-            missing = {"e_true", "e_meas", "cond"} - set(data.files)
-            if missing:
-                raise KeyError(f"NPZ file is missing arrays: {sorted(missing)}")
-            return data["e_true"], data["e_meas"], data["cond"]
+        try:
+            data = np.load(args.data)
+        except:
+            raise ValueError(f"Could not load {args.data}")
+
+        e_true = np.c_[data['e1_t'], data['e2_t']]
+        e_meas = np.c_[data['e1'], data['e2']]
+        cond   = np.c_[data['hlf'], data['mag'], data['snr']]
+
+        return e_true, e_meas, cond
 
     if args.e_meas is None or args.cond is None:
         raise ValueError("--e-true requires --e-meas and --cond")

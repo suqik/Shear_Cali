@@ -74,15 +74,15 @@ not add a likelihood Jacobian.
 ## Posterior MCMC Sampling
 
 After training a likelihood, sample the intrinsic-shape posterior for one
-observed galaxy with `emcee`:
+observed galaxy with `zeus-mcmc`:
 
 ```python
-from shape_flow import MCMCConfig, load_likelihood, sample_posterior_emcee
+from shape_flow import MCMCConfig, load_likelihood, sample_posterior_zeus
 
 likelihood = load_likelihood("checkpoints/shape_flow.pt", map_location="cpu")
 config = MCMCConfig(n_walkers=32, n_steps=1000, burn_in=200, thin=2)
 
-result = sample_posterior_emcee(
+result = sample_posterior_zeus(
     likelihood,
     e_meas_obs,
     cond_obs,

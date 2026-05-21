@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Sample intrinsic-shape posteriors with emcee from a trained likelihood."""
+"""Sample intrinsic-shape posteriors with Zeus from a trained likelihood."""
 
 from __future__ import annotations
 
@@ -13,12 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from shape_flow import MCMCConfig, load_likelihood, sample_posterior_emcee
+from shape_flow import MCMCConfig, load_likelihood, sample_posterior_zeus
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sample p(e_true | e_meas, cond) using emcee."
+        description="Sample p(e_true | e_meas, cond) using zeus-mcmc."
     )
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -32,9 +32,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thin", type=int, default=1)
     parser.add_argument("--initial-scale", type=float, default=0.03)
     parser.add_argument("--prior-radius", type=float, default=0.999)
+    parser.add_argument("--light-mode", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--progress", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
 
 
@@ -64,8 +66,10 @@ def main() -> None:
         prior_radius=args.prior_radius,
         random_seed=args.seed,
         progress=args.progress,
+        verbose=args.verbose,
+        light_mode=args.light_mode,
     )
-    result = sample_posterior_emcee(
+    result = sample_posterior_zeus(
         likelihood,
         e_meas,
         cond,
@@ -79,14 +83,16 @@ def main() -> None:
         log_prob=result.log_prob,
         chain=result.chain,
         log_prob_chain=result.log_prob_chain,
-        acceptance_fraction=result.acceptance_fraction,
         initial_state=result.initial_state,
         e_meas=e_meas,
         cond=cond,
+        ncall=result.ncall if result.ncall is not None else -1,
+        efficiency=result.efficiency if result.efficiency is not None else np.nan,
     )
     print(f"saved={args.output}")
     print(f"samples={result.samples.shape}")
-    print(f"mean_acceptance={result.acceptance_fraction.mean():.3f}")
+    print(f"ncall={result.ncall}")
+    print(f"efficiency={result.efficiency}")
 
 
 if __name__ == "__main__":

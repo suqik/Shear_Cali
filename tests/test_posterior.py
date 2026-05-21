@@ -3,9 +3,9 @@ import pytest
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
 pytest.importorskip("zuko")
-pytest.importorskip("emcee")
+pytest.importorskip("zeus")
 
-from shape_flow import MCMCConfig, sample_posterior_emcee, train_shape_flow
+from shape_flow import MCMCConfig, sample_posterior_zeus, train_shape_flow
 from shape_flow.posterior import uniform_ellipticity_prior
 from shape_flow.train import TrainingConfig
 
@@ -20,7 +20,7 @@ def test_uniform_ellipticity_prior():
     assert not np.isfinite(log_prior[1])
 
 
-def test_emcee_posterior_sampling_shapes():
+def test_zeus_posterior_sampling_shapes():
     generator = torch.Generator().manual_seed(11)
     n_samples = 64
     e_true = torch.randn(n_samples, 2, generator=generator) * 0.2
@@ -51,7 +51,7 @@ def test_emcee_posterior_sampling_shapes():
         progress=False,
     )
 
-    result = sample_posterior_emcee(
+    result = sample_posterior_zeus(
         likelihood,
         e_meas[0],
         cond[0],

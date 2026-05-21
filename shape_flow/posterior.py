@@ -14,7 +14,7 @@ PriorLogProb = Callable[[np.ndarray, np.ndarray], np.ndarray | float]
 
 @dataclass
 class MCMCConfig:
-    """Configuration for emcee posterior sampling of one galaxy."""
+    """Configuration for Zeus posterior sampling of one galaxy."""
 
     n_walkers: int = 32
     n_steps: int = 1000
@@ -24,10 +24,14 @@ class MCMCConfig:
     prior_radius: float = 0.999
     random_seed: int | None = 0
     progress: bool = False
+    verbose: bool = False
+    light_mode: bool = False
 
     def __post_init__(self) -> None:
         if self.n_walkers < 4:
             raise ValueError("n_walkers must be at least 4 for a 2D posterior")
+        if self.n_walkers % 2:
+            raise ValueError("Zeus requires an even number of walkers")
         if self.n_steps < 1:
             raise ValueError("n_steps must be positive")
         if not 0 <= self.burn_in < self.n_steps:
@@ -42,14 +46,15 @@ class MCMCConfig:
 
 @dataclass
 class MCMCResult:
-    """Samples and diagnostics returned by the emcee posterior sampler."""
+    """Samples and diagnostics returned by the Zeus posterior sampler."""
 
     samples: np.ndarray
     log_prob: np.ndarray
     chain: np.ndarray
     log_prob_chain: np.ndarray
-    acceptance_fraction: np.ndarray
     initial_state: np.ndarray
+    ncall: int | None
+    efficiency: float | None
     config: MCMCConfig = field(repr=False)
 
 
@@ -77,7 +82,7 @@ def make_log_posterior(
     prior_log_prob: PriorLogProb | None = None,
     prior_radius: float = 0.999,
 ) -> Callable[[np.ndarray], np.ndarray | float]:
-    """Build ``log p(e_true | e_meas, cond)`` for emcee.
+    """Build ``log p(e_true | e_meas, cond)`` for Zeus.
 
     The returned function accepts either one position with shape ``(2,)`` or a
     vectorized walker array with shape ``(n_walkers, 2)``.
@@ -122,7 +127,7 @@ def make_log_posterior(
     return log_posterior
 
 
-def sample_posterior_emcee(
+def sample_posterior_zeus(
     likelihood: ShapeFlowLikelihood,
     e_meas: Any,
     cond: Any,
@@ -131,7 +136,7 @@ def sample_posterior_emcee(
     config: MCMCConfig | None = None,
     initial_state: Any | None = None,
 ) -> MCMCResult:
-    """Sample ``p(e_true | e_meas, cond)`` with ``emcee``.
+    """Sample ``p(e_true | e_meas, cond)`` with ``zeus-mcmc``.
 
     The posterior is proportional to the learned physical-unit likelihood
     multiplied by the supplied prior. If no prior is supplied, a uniform prior
@@ -139,14 +144,17 @@ def sample_posterior_emcee(
     """
 
     try:
-        import emcee
+        import zeus
     except ImportError as exc:  # pragma: no cover
         raise ImportError(
-            "emcee is required for posterior sampling. Install it with "
-            "`pip install emcee` or `pip install -e .`."
+            "zeus-mcmc is required for posterior sampling. Install it with "
+            "`pip install zeus-mcmc` or `pip install -e .`."
         ) from exc
 
     config = config or MCMCConfig()
+    if config.random_seed is not None:
+        np.random.seed(config.random_seed)
+
     log_posterior = make_log_posterior(
         likelihood,
         e_meas,
@@ -169,11 +177,13 @@ def sample_posterior_emcee(
         if not np.all(np.isfinite(initial_log_prob)):
             raise ValueError("initial_state contains walkers with non-finite log posterior")
 
-    sampler = emcee.EnsembleSampler(
+    sampler = zeus.EnsembleSampler(
         config.n_walkers,
         2,
         log_posterior,
         vectorize=True,
+        verbose=config.verbose,
+        light_mode=config.light_mode,
     )
     sampler.run_mcmc(
         initial_state_array,
@@ -194,8 +204,9 @@ def sample_posterior_emcee(
         ),
         chain=sampler.get_chain(),
         log_prob_chain=sampler.get_log_prob(),
-        acceptance_fraction=sampler.acceptance_fraction,
         initial_state=initial_state_array,
+        ncall=_safe_int_attr(sampler, "ncall"),
+        efficiency=_safe_float_attr(sampler, "efficiency"),
         config=config,
     )
 
@@ -300,3 +311,19 @@ def _draw_uniform_disk(
     angle = rng.uniform(0.0, 2.0 * np.pi, size=n_samples)
     radial = radius * np.sqrt(rng.uniform(0.0, 1.0, size=n_samples))
     return np.column_stack([radial * np.cos(angle), radial * np.sin(angle)])
+
+
+def _safe_int_attr(obj: Any, name: str) -> int | None:
+    try:
+        value = getattr(obj, name)
+    except Exception:
+        return None
+    return None if value is None else int(value)
+
+
+def _safe_float_attr(obj: Any, name: str) -> float | None:
+    try:
+        value = getattr(obj, name)
+    except Exception:
+        return None
+    return None if value is None else float(value)

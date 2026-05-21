@@ -8,7 +8,7 @@ from .posterior import (
     MCMCResult,
     initialize_walkers,
     make_log_posterior,
-    sample_posterior_emcee,
+    sample_posterior_zeus,
     uniform_ellipticity_prior,
 )
 from .scaling import Standardizer
@@ -29,7 +29,7 @@ __all__ = [
     "load_likelihood",
     "make_log_posterior",
     "make_context",
-    "sample_posterior_emcee",
+    "sample_posterior_zeus",
     "split_arrays",
     "train_shape_flow",
     "uniform_ellipticity_prior",
